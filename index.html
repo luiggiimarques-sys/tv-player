@@ -14,10 +14,41 @@
 <script>
 var lista = [], pos = 0, player = null, pronto = false, pendente = null;
 
-// 23/10: a capa de anúncio foi retirada a pedido do Luiggi ("deixa livre essa parte").
+// ===== Tapar anúncio (23/10: aparecia anúncio de terror para o menino de 2 anos) =====
+// A IFrame API não avisa quando é anúncio: durante o anúncio o tempo do desenho fica parado, o estado pode ser
+// qualquer um (tocando, carregando, pausado) e a duração informada é a do desenho. Por isso a regra é invertida:
+// a tela só fica DESCOBERTA (e com som) enquanto o vídeo certo está comprovadamente andando — duas leituras seguidas
+// com o tempo avançando, a última há no máximo 0,3 s. Qualquer outra coisa tapa e tira o som.
+function precisaCapa(e, estado, tempo, agoraMs, idAtual, idEsperado) {
+  var r = { ultimo: e.ultimo, desde: e.desde, passos: e.passos || 0 };
+  if (!idAtual || idAtual !== idEsperado) {            // ainda é o vídeo anterior (ou nenhum): tapado
+    r.ultimo = null; r.desde = -Infinity; r.passos = 0;
+  } else if (r.ultimo === null || tempo < r.ultimo - 0.5) { // 1ª leitura ou tempo voltou: só vira referência
+    r.ultimo = tempo; r.desde = -Infinity; r.passos = 0;
+  } else if (tempo > r.ultimo + 0.03) {                 // andou
+    r.ultimo = tempo; r.desde = agoraMs; r.passos = r.passos + 1;
+  }
+  r.capa = !(estado === 1 && r.passos >= 2 && agoraMs - r.desde <= 300);
+  r.motivo = estado === 2 ? 'pausa' : 'anuncio';
+  return r;
+}
+var capa = { ultimo: null, desde: -Infinity, passos: 0, capa: true }, capaAvisada = null, motivoAvisado = null;
+function vigiarAnuncio() {
+  if (!pronto || !player.getPlayerState) return;
+  var dados = (player.getVideoData && player.getVideoData()) || {};
+  capa = precisaCapa(capa, player.getPlayerState(), player.getCurrentTime() || 0, Date.now(), dados.video_id, lista[pos]);
+  try { if (capa.capa) { if (!player.isMuted()) player.mute(); } else if (player.isMuted()) player.unMute(); } catch (x) {}
+  if (capa.capa !== capaAvisada || (capa.capa && capa.motivo !== motivoAvisado)) {
+    capaAvisada = capa.capa; motivoAvisado = capa.motivo;
+    avisar({ evento: 'anuncio', capa: capa.capa, motivo: capa.motivo });
+  }
+}
+setInterval(vigiarAnuncio, 100);
 function avisar(msg) { try { parent.postMessage(msg, '*'); } catch (e) {} }
 function tocar(i) {
   pos = (i + lista.length) % lista.length;
+  capa = { ultimo: null, desde: -Infinity, passos: 0, capa: true };   // vídeo novo começa tapado
+  try { if (pronto) player.mute(); } catch (x) {}
   if (pronto) player.loadVideoById(lista[pos]); else pendente = lista[pos];
   avisar({ evento: 'video', id: lista[pos], pos: pos });
 }
@@ -33,7 +64,7 @@ window.addEventListener('message', function (e) {
 function onYouTubeIframeAPIReady() {
   player = new YT.Player('p', {
     width: '100%', height: '100%', host: 'https://www.youtube-nocookie.com',
-    playerVars: { autoplay: 1, controls: 0, rel: 0, playsinline: 1, iv_load_policy: 3, fs: 0, disablekb: 1, hl: 'pt-BR', cc_load_policy: 0 },
+    playerVars: { autoplay: 1, controls: 0, rel: 0, playsinline: 1, iv_load_policy: 3, fs: 0, disablekb: 1, hl: 'pt-BR', cc_load_policy: 0, mute: 1 }, // começa mudo; o som liga só com o desenho andando
     events: {
       onReady: function () { try { player.unloadModule('captions'); player.unloadModule('cc'); } catch (e) {} // sem legenda automática
         pronto = true; if (pendente) { player.loadVideoById(pendente); pendente = null; } avisar({ evento: 'pronto' }); },
